@@ -28,7 +28,7 @@
 // User configuration
 // ---------------------------------------------------------------------------
 
-/If needed, change the frequency of the WSPR transmission here*/
+//If needed, change the frequency of the WSPR transmission here*/
 /** WSPR dial frequency (Hz), 10 m segment. */
 static const double WSPR_BASE_HZ = 28124600.0;
 
@@ -341,4 +341,45 @@ void setup() {
 
 void loop() {
   delay(60000);
+
+  // 1. Try to acquire a fresh GPS fix (timeout after 10 seconds)
+  // This updates utcHour, utcMinute, and position data
+  acquireGpsRmc(10000UL);
+
+  if (haveTime) {
+    uint16_t currentDayPack = packedUtcDay();
+
+    // 2. Check if we are in the TX window AND haven't sent today yet
+    if (inMorningWindowUTC() && !alreadyTransmittedToday(currentDayPack)) {
+      
+      // Determine Grid (Current GPS position or Static fallback)
+      char grid4[5];
+      if (havePosition) {
+        char grid6[7];
+        jtencode.latlon_to_grid(gpsLatDeg, gpsLonDeg, grid6);
+        strncpy(grid4, grid6, 4);
+        grid4[4] = '\0';
+      } else {
+        strcpy(grid4, GRID_STATIC);
+      }
+
+      // 3. Perform the WSPR Transmission
+      if (si5351Ok) {
+        Serial.print(F("Starting WSPR TX at UTC: "));
+        Serial.print(utcHour);
+        Serial.print(':');
+        Serial.println(utcMinute);
+        
+        sendWsprPacket(CALLSIGN, grid4, WSPR_POWER_DBM);
+        
+        // 4. Mark today as "Done" in EEPROM
+        markTransmittedToday(currentDayPack);
+        Serial.println(F("TX Complete."));
+      }
+    }
+  }
+
+  // 5. Short sleep before next GPS poll to save power 
+  // (though on a Nano, power savings are minimal without deep sleep)
+  delay(30000); 
 }
