@@ -3,7 +3,7 @@
 #include <Wire.h>
 #include <Adafruit_SI5351.h>
 #include <JTEncode.h>
-#include <TinyGPS++.h> // Library: http://arduiniana.org/libraries/tinygpsplus/
+#include <TinyGPS++.h>
 
 // ---------------------------------------------------------------------------
 // User configuration
@@ -15,7 +15,7 @@ static const char GRID_STATIC[] = "CM97";
 static const uint8_t MORNING_START_UTC_HOUR = 6;
 static const uint8_t MORNING_END_UTC_HOUR = 12;
 
-#define GPSserial Serial1  // Hardware Serial port for GPS
+#define GPSserial Serial1  
 static const int EEPROM_ADDR_LAST_TX_DAY = 0;
 static const uint16_t WSPR_SYMBOL_DELAY_MS = 683;
 static const uint8_t WSPR_TONE_SPACING_CENTIHZ = 146;
@@ -27,36 +27,29 @@ static const uint8_t DEBUG_FORCE_TX = 0;
 Adafruit_SI5351 clockgen;
 TinyGPSPlus gps;
 JTEncode jtencode;
-
 bool si5351Ok = false;
 
 // ---------------------------------------------------------------------------
-// Si5351 Frequency Control
+// Helper Functions
 // ---------------------------------------------------------------------------
+
 static bool si5351SetClk0HzDouble(double hz) {
   if (!si5351Ok) return false;
-  // Safety check for 10m band
-  if (hz < 28000000.0 || hz > 29700000.0) return false;
-
   const double fVco = 900000000.0;
   uint64_t msNum = (uint64_t)(fVco * 1048575.0 / hz);
   uint32_t a = (uint32_t)(msNum / 1048575ULL);
   uint32_t b = (uint32_t)(msNum % 1048575ULL);
   const uint32_t c = 1048575UL;
   if (a < 4U) a = 4U;
-
   clockgen.setupPLLInt(SI5351_PLL_A, 36);
   clockgen.setupMultisynth(0, SI5351_PLL_A, a, b, c);
   clockgen.setupRdiv(0, SI5351_R_DIV_1);
   return true;
 }
 
-static void sendWsprPacket(const char *call, const char *grid4, int8_t dbm) {
+void sendWsprPacket(const char *grid4) {
   uint8_t symbols[WSPR_SYMBOL_COUNT];
-  jtencode.wspr_encode(call, grid4, dbm, symbols);
-
-  if (!si5351Ok) return;
-
+  jtencode.wspr_encode(CALLSIGN, grid4, WSPR_POWER_DBM, symbols);
   clockgen.enableOutputs(true);
   for (uint16_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     double freq = WSPR_BASE_HZ + (double)symbols[i] * (WSPR_TONE_SPACING_CENTIHZ / 100.0);
@@ -66,121 +59,27 @@ static void sendWsprPacket(const char *call, const char *grid4, int8_t dbm) {
   clockgen.enableOutputs(false);
 }
 
-// ---------------------------------------------------------------------------
-// Date & Time Logic
-// ---------------------------------------------------------------------------
+bool gpsWaitFix(uint32_t waitmS) {
+  uint32_t startmS = millis();
+  while (millis() - startmS < waitmS) {
+    if (GPSserial.available() > 0) {
+      gps.encode(GPSserial.read());
+    }
+    if (gps.time.isUpdated() && gps.date.isValid()) return true;
+  }
+  return false;
+}
+
 static uint16_t dayOfYear(uint16_t y, uint8_t m, uint8_t d) {
   static const uint8_t mdays[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
   bool leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
   uint16_t doy = d;
   for (uint8_t i = 1; i < m; i++) {
-    doy += mdays[i - 1];
+    doy += mdays[i-1];
     if (i == 2 && leap) doy += 1;
   }
   return doy;
 }
 
-static uint16_t packedUtcDay() {
-  uint8_t yy = (uint8_t)(gps.date.year() % 100);
-  uint16_t doy = dayOfYear(gps.date.year(), gps.date.month(), gps.date.day());
-  return ((uint16_t)yy << 9) | (doy & 0x1FFU);
-}
-
-static bool alreadyTransmittedToday() {
-  uint16_t storedDay, currentDay;
-  currentDay = packedUtcDay();
-  EEPROM.get(EEPROM_ADDR_LAST_TX_DAY, storedDay);
-  return storedDay == currentDay;
-}
-
-static void markTransmittedToday() {
-  EEPROM.put(EEPROM_ADDR_LAST_TX_DAY, packedUtcDay());
-}
-
-static bool inMorningWindowUTC() {
-  if (DEBUG_FORCE_TX) return true;
-  uint8_t h = gps.time.hour();
-  if (MORNING_START_UTC_HOUR < MORNING_END_UTC_HOUR) {
-    return h >= MORNING_START_UTC_HOUR && h < MORNING_END_UTC_HOUR;
-  }
-  return h >= MORNING_START_UTC_HOUR || h < MORNING_END_UTC_HOUR;
-}
-
-// ---------------------------------------------------------------------------
-// GPS Acquisition (Stuart Robinson Method)
-// ---------------------------------------------------------------------------
-bool gpsWaitFix(uint32_t waitmS) {
-  uint32_t startmS = millis();
-
-  while (millis() - startmS < waitmS) {
-    if (GPSserial.available() > 0) {
-      gps.encode(GPSserial.read());
-    }
-    // TinyGPS++ check: verify we have valid location and time
-    if (gps.location.isUpdated() && gps.time.isUpdated() && gps.date.isValid()) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Main Program
-// ---------------------------------------------------------------------------
-void setup() {
-  GPSserial.begin(9600);
-  Serial.begin(115200);
-  Serial.println(F("Pico Beacon Starting..."));
-
-  Wire.begin();
-  if (clockgen.begin() != ERROR_NONE) {
-    Serial.println(F("Si5351 not found"));
-    si5351Ok = false;
-  } else {
-    si5351Ok = true;
-    clockgen.enableOutputs(false);
-  }
-}
-
-void loop() {
-  Serial.println(F("Attempting GPS fix..."));
-  
-  // Wait up to 10 seconds for a valid fix
-  if (gpsWaitFix(10000)) {
-    Serial.print(F("UTC: ")); Serial.print(gps.time.hour()); Serial.print(F(":")); Serial.println(gps.time.minute());
-    Serial.print(F("Sats: ")); Serial.println(gps.satellites.value());
-
-    // Check TX Logic
-    if (inMorningWindowUTC() && !alreadyTransmittedToday()) {
-      char grid4[5];
-      if (gps.location.isValid()) {
-        char grid6[7];
-        jtencode.latlon_to_grid(gps.location.lat(), gps.location.lng(), grid6);
-        memcpy(grid4, grid6, 4);
-        grid4[4] = '\0';
-      } else {
-        strcpy(grid4, GRID_STATIC);
-      }
-
-      Serial.print(F("Starting WSPR TX with Grid: ")); Serial.println(grid4);
-      sendWsprPacket(CALLSIGN, grid4, WSPR_POWER_DBM);
-      
-      if (!DEBUG_FORCE_TX) {
-        markTransmittedToday();
-      }
-      Serial.println(F("TX Done."));
-    } else {
-      Serial.println(F("Outside TX window or already sent today."));
-    }
-  } else {
-    Serial.println(F("No GPS Fix - Timeout."));
-    
-    // Optional: Emergency TX if DEBUG is on even without fix
-    if (DEBUG_FORCE_TX) {
-       Serial.println(F("DEBUG: Forcing TX without fix"));
-       sendWsprPacket(CALLSIGN, GRID_STATIC, WSPR_POWER_DBM);
-    }
-  }
-
-  delay(30000); // Wait 30s before polling GPS again
-}
+uint16_t getPackedDate() {
+  return ((uint16_t)(gps.date.year() % 100)
