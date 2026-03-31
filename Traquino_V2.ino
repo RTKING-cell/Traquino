@@ -1,0 +1,234 @@
+#include <Arduino.h>
+#include <EEPROM.h>
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include <Adafruit_SI5351.h>
+#include <JTEncode.h>
+
+// ---------------------------------------------------------------------------
+// User configuration
+// ---------------------------------------------------------------------------
+static const double WSPR_BASE_HZ = 28124600.0;
+static const int8_t WSPR_POWER_DBM = 20;
+static const char CALLSIGN[] = "NOCALL";
+static const char GRID_STATIC[] = "AA00";
+
+static const uint8_t MORNING_START_UTC_HOUR = 6;
+static const uint8_t MORNING_END_UTC_HOUR   = 12;
+
+static const int EEPROM_ADDR_LAST_TX_DAY = 0;
+static const int PIN_GPS_RX = 4;
+static const int PIN_GPS_TX = 5; // Unused but required by SoftwareSerial
+static const long GPS_BAUD = 9600;
+
+static const uint16_t WSPR_SYMBOL_DELAY_MS = 683;
+static const uint8_t WSPR_TONE_SPACING_CENTIHZ = 146;
+
+// ---------------------------------------------------------------------------
+// Globals
+// ---------------------------------------------------------------------------
+Adafruit_SI5351 clockgen;
+SoftwareSerial gpsSerial(PIN_GPS_RX, PIN_GPS_TX);
+JTEncode jtencode;
+
+bool si5351Ok = false;
+uint8_t utcHour, utcMinute, utcSecond, utcDay, utcMonth;
+uint16_t utcYear;
+float gpsLatDeg, gpsLonDeg;
+bool haveTime = false;
+bool havePosition = false;
+
+char nmeaBuffer[100];
+byte bufferIdx = 0;
+
+// ---------------------------------------------------------------------------
+// GPS Processing (Stuart Robinson Method)
+// ---------------------------------------------------------------------------
+
+// Helper to extract specific fields from NMEA string
+void getField(char* buffer, char* field, int fieldNum) {
+    int count = 0;
+    int i = 0, j = 0;
+    while (count < fieldNum && buffer[i] != '\0') {
+        if (buffer[i] == ',') count++;
+        i++;
+    }
+    while (buffer[i] != ',' && buffer[i] != '\0' && buffer[i] != '*') {
+        field[j++] = buffer[i++];
+    }
+    field[j] = '\0';
+}
+
+bool parseRMC(char* line) {
+    if (strncmp(line, "$GNRMC", 6) != 0 && strncmp(line, "$GPRMC", 6) != 0) return false;
+
+    char field[16];
+    
+    // Status (Field 2)
+    getField(line, field, 2);
+    if (field[0] != 'A') return false; 
+
+    // Time (Field 1)
+    getField(line, field, 1);
+    if (strlen(field) >= 6) {
+        utcHour   = (field[0] - '0') * 10 + (field[1] - '0');
+        utcMinute = (field[2] - '0') * 10 + (field[3] - '0');
+        utcSecond = (field[4] - '0') * 10 + (field[5] - '0');
+    }
+
+    // Latitude (Field 3 & 4)
+    getField(line, field, 3);
+    float lat = atof(field);
+    getField(line, field, 4);
+    int deg = (int)(lat / 100);
+    gpsLatDeg = deg + (lat - deg * 100) / 60.0;
+    if (field[0] == 'S') gpsLatDeg = -gpsLatDeg;
+
+    // Longitude (Field 5 & 6)
+    getField(line, field, 5);
+    float lon = atof(field);
+    getField(line, field, 6);
+    deg = (int)(lon / 100);
+    gpsLonDeg = deg + (lon - deg * 100) / 60.0;
+    if (field[0] == 'W') gpsLonDeg = -gpsLonDeg;
+
+    // Date (Field 9)
+    getField(line, field, 9);
+    if (strlen(field) == 6) {
+        utcDay   = (field[0] - '0') * 10 + (field[1] - '0');
+        utcMonth = (field[2] - '0') * 10 + (field[3] - '0');
+        utcYear  = 2000 + (field[4] - '0') * 10 + (field[5] - '0');
+    }
+
+    haveTime = true;
+    havePosition = true;
+    return true;
+}
+
+bool processGPS() {
+    while (gpsSerial.available()) {
+        char c = gpsSerial.read();
+        if (c == '\n' || c == '\r') {
+            nmeaBuffer[bufferIdx] = '\0';
+            if (bufferIdx > 10) {
+                if (parseRMC(nmeaBuffer)) {
+                    bufferIdx = 0;
+                    return true;
+                }
+            }
+            bufferIdx = 0;
+        } else if (bufferIdx < sizeof(nmeaBuffer) - 1) {
+            nmeaBuffer[bufferIdx++] = c;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Transmission Helpers
+// ---------------------------------------------------------------------------
+
+uint16_t packedUtcDay() {
+    // Day of year calculation
+    static const uint8_t mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    uint16_t doy = utcDay;
+    bool leap = (utcYear % 4 == 0 && (utcYear % 100 != 0 || utcYear % 400 == 0));
+    for (uint8_t i = 1; i < utcMonth; i++) {
+        doy += mdays[i - 1];
+        if (i == 2 && leap) doy += 1;
+    }
+    return ((uint16_t)(utcYear % 100) << 9) | (doy & 0x1FFU);
+}
+
+void executeWsprTx() {
+    char grid4[5];
+    if (havePosition) {
+        char grid6[7];
+        jtencode.latlon_to_grid(gpsLatDeg, gpsLonDeg, grid6);
+        memcpy(grid4, grid6, 4);
+        grid4[4] = '\0';
+    } else {
+        strcpy(grid4, GRID_STATIC);
+    }
+
+    Serial.print(F("Transmitting WSPR: "));
+    Serial.println(grid4);
+
+    uint8_t symbols[WSPR_SYMBOL_COUNT];
+    jtencode.wspr_encode(CALLSIGN, grid4, WSPR_POWER_DBM, symbols);
+
+    clockgen.enableOutputs(true);
+    for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
+        double freq = WSPR_BASE_HZ + (double)symbols[i] * (WSPR_TONE_SPACING_CENTIHZ / 100.0);
+        
+        // Simple Si5351 frequency set
+        clockgen.setupPLL(SI5351_PLL_A, 36, 0, 1); 
+        clockgen.setupMultisynth(0, SI5351_PLL_A, 900000000UL/freq, 0, 1);
+        
+        delay(WSPR_SYMBOL_DELAY_MS);
+    }
+    clockgen.enableOutputs(false);
+    
+    if (haveTime) {
+        EEPROM.put(EEPROM_ADDR_LAST_TX_DAY, packedUtcDay());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main Flow
+// ---------------------------------------------------------------------------
+
+void setup() {
+    Serial.begin(9600);
+    gpsSerial.begin(GPS_BAUD);
+    Wire.begin();
+
+    if (clockgen.begin() != ERROR_NONE) {
+        Serial.println(F("Si5351 not found"));
+        while (1); // Stop
+    }
+    si5351Ok = true;
+    clockgen.enableOutputs(false);
+
+    // Initial Acquisition Loop (Block until fix)
+    Serial.println(F("Waiting for GPS fix..."));
+    while (!haveTime) {
+        processGPS();
+    }
+
+    // Logic: Determine shouldTx?
+    uint16_t lastDay;
+    EEPROM.get(EEPROM_ADDR_LAST_TX_DAY, lastDay);
+
+    bool inWindow = (utcHour >= MORNING_START_UTC_HOUR && utcHour < MORNING_END_UTC_HOUR);
+    if (inWindow && (lastDay != packedUtcDay())) {
+        executeWsprTx();
+    } else {
+        Serial.println(F("Initial window skipped."));
+    }
+
+    Serial.println(F("Cycle complete; entering loop."));
+}
+
+void loop() {
+    // 1. Delay 60s
+    delay(60000UL);
+
+    // 2. Acquire GPS (10s window)
+    unsigned long startTry = millis();
+    while (millis() - startTry < 10000UL) {
+        processGPS();
+    }
+
+    // 3. Logic checks
+    if (haveTime) {
+        uint16_t lastDay;
+        EEPROM.get(EEPROM_ADDR_LAST_TX_DAY, lastDay);
+        bool inWindow = (utcHour >= MORNING_START_UTC_HOUR && utcHour < MORNING_END_UTC_HOUR);
+
+        if (inWindow && (lastDay != packedUtcDay())) {
+            executeWsprTx();
+            delay(30000UL); // Post-TX delay from flowchart
+        }
+    }
+}
