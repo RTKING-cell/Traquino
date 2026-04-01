@@ -11,7 +11,7 @@ The logic includes a specific "Morning Window" transmission feature to save powe
 
 **Traquino** is an automated amateur radio beacon firmware. It synchronizes with GPS satellites to obtain high-accuracy UTC time and geographical coordinates, which are then used to transmit WSPR signals via an Si5351 clock generator.
 
-##Features
+## Features
 
 * **GPS Time Sync:** Automatically waits for a GPS fix to ensure the WSPR transmission starts at the correct timing interval.
 * **Dynamic Gridsquares:** Calculates your 4-digit Maidenhead locator (e.g., FN20) on the fly based on real-time GPS coordinates.
@@ -19,7 +19,7 @@ The logic includes a specific "Morning Window" transmission feature to save powe
 * **Persistence:** Uses EEPROM to store the last transmission date, ensuring the beacon doesn't double-transmit if the power is cycled.
 * **Frequency Agility:** Easily adjustable base frequency for different amateur bands.
 
-##Hardware Requirements
+## Hardware Requirements
 
 * **Microcontroller:** Arduino Uno, Nano, or Pro Mini (ATmega328P).
 * **Clock Generator:** Adafruit Si5351 Breakout.
@@ -35,7 +35,7 @@ The logic includes a specific "Morning Window" transmission feature to save powe
 | **GPS TX** | Pin 4 | Data from GPS to Arduino |
 | **GPS RX** | Pin 5 | (Unused by code but connected) |
 
-## ⚙️ Configuration
+##  Configuration
 
 Before uploading, modify the "User Configuration" section in the code:
 
