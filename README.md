@@ -1,15 +1,9 @@
 # Traquino
-Flowchart
-https://docs.google.com/document/d/1l4xigrRjKPtI9wjoPr4rq99L6TkJqXM9zzhIyigbU7o/edit?tab=t.0
 
 This code is a **WSPR (Weak Signal Propagation Reporter)** beacon controller for Arduino. It uses a GPS module for precise timing and location (to generate the Maidenhead locator) and an Si5351 clock generator to synthesize the RF signal.
 
 The logic includes a specific "Morning Window" transmission feature to save power or bandwidth, only transmitting once per day during a specific UTC time block.
 
-
-# Traquino: GPS-Synced WSPR Beacon
-
-**Traquino** is an automated amateur radio beacon firmware. It synchronizes with GPS satellites to obtain high-accuracy UTC time and geographical coordinates, which are then used to transmit WSPR signals via an Si5351 clock generator.
 
 ## Features
 
