@@ -59,4 +59,5 @@ You must install these via the Arduino Library Manager:
 4.  **Idle:** After transmitting (or if outside the window), it enters a low-activity loop, checking the GPS every minute to keep time synchronized.
 
 ## Disclaimer
-*This software is for licensed Amateur Radio operators only. Ensure your hardware includes proper low-pass filtering before connecting to an antenna to prevent interference.*
+*This software is for licensed Amateur Radio operators only. Ensure your hardware includes proper low-pass filtering before connecting to an antenna to prevent interference.
+Also when inputing TX_INTERVAL_MINUTES, make sure it is an even number, or else the logic breaks.*
