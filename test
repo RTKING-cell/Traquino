@@ -1,0 +1,39 @@
+void executeWsprTx() {
+    char grid4[5];
+    
+    // 1. Grid Logic
+    if (havePosition) {
+        char grid6[7];
+        jtencode.latlon_to_grid(gpsLatDeg, gpsLonDeg, grid6);
+        memcpy(grid4, grid6, 4);
+        grid4[4] = '\0';
+    } else {
+        strcpy(grid4, "CM97"); 
+    }
+
+    // 2. Encode
+    uint8_t symbols[WSPR_SYMBOL_COUNT];
+    jtencode.wspr_encode(CALLSIGN, grid4, WSPR_POWER_DBM, symbols);
+
+    Serial.println(F("TXing..."));
+
+    // 3. Start the Clock
+    clockgen.enableOutputs(true);
+
+    for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
+        // We calculate the frequency as a double for precision
+        // Tone spacing is exactly 1.4648 Hz
+        double toneFreq = WSPR_BASE_HZ + (symbols[i] * 1.4648);
+
+        // USE THIS SPECIFIC METHOD:
+        // setupCLK0(frequency, clock_divider, multisynth_source)
+        // This forces the library to keep the PLL stable.
+        clockgen.setupCLK0((uint32_t)toneFreq, SI5351_CLK_DRIVE_STRENGTH_8MA, SI5351_PLL_A);
+
+        delay(WSPR_SYMBOL_DELAY_MS);
+    }
+
+    // 4. Stop
+    clockgen.enableOutputs(false);
+    Serial.println(F("Done."));
+}
