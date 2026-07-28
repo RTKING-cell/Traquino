@@ -1,3 +1,8 @@
+/* This is absolute trash
+ * Do not use
+ * Thank you
+ */
+
 /*
  * Pico balloon beacon — Arduino Nano + ATGM336H-5N (GNSS) + Si5351A
  *
